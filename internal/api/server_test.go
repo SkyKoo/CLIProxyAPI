@@ -2144,6 +2144,7 @@ func TestModelsWithClientVersionReturnsCodexCatalog(t *testing.T) {
 			MaxCompletionTokens: 64000,
 			Thinking:            &registry.ThinkingSupport{Levels: []string{"low", "medium", "high", "xhigh"}},
 		},
+		{ID: "gpt-6.2-sol", Object: "model", OwnedBy: "openai", Type: "openai"},
 		{
 			ID:            "custom-codex-model-test",
 			Object:        "model",
@@ -2203,16 +2204,9 @@ func TestModelsWithClientVersionReturnsCodexCatalog(t *testing.T) {
 		t.Fatal("expected codex catalog models")
 	}
 
-	var gpt55 map[string]any
-	var custom map[string]any
-	for _, model := range resp.Models {
-		switch slug, _ := model["slug"].(string); slug {
-		case "gpt-5.5":
-			gpt55 = model
-		case "custom-codex-model-test":
-			custom = model
-		}
-	}
+	models := codexClientTestModelsBySlug(resp.Models)
+	gpt55 := models["gpt-5.5"]
+	custom := models["custom-codex-model-test"]
 	if gpt55 == nil {
 		t.Fatal("expected gpt-5.5 codex catalog entry")
 	}
@@ -2225,9 +2219,21 @@ func TestModelsWithClientVersionReturnsCodexCatalog(t *testing.T) {
 	if got, _ := gpt55["max_tokens"].(float64); got != 64000 {
 		t.Fatalf("gpt-5.5 max_tokens = %v, want 64000", gpt55["max_tokens"])
 	}
-	serviceTiers, ok := gpt55["service_tiers"].([]any)
-	if !ok || len(serviceTiers) != 1 {
-		t.Fatalf("expected gpt-5.5 priority service tier, got %#v", gpt55["service_tiers"])
+	var catalog struct {
+		Models []map[string]any `json:"models"`
+	}
+	if err := json.Unmarshal(registry.GetCodexClientModelsJSON(), &catalog); err != nil {
+		t.Fatalf("parse Codex client model templates: %v", err)
+	}
+	templates := codexClientTestModelsBySlug(catalog.Models)
+	for _, slug := range []string{"gpt-5.5", "gpt-6.2-sol"} {
+		want, ok := templates[slug]["service_tiers"].([]any)
+		if !ok {
+			t.Fatalf("expected a service_tiers array in the catalog for %s", slug)
+		}
+		if got := models[slug]["service_tiers"]; !reflect.DeepEqual(got, want) {
+			t.Errorf("%s service_tiers = %#v, want %#v from the catalog", slug, got, want)
+		}
 	}
 	if custom == nil {
 		t.Fatal("expected custom model codex catalog entry")
@@ -2235,7 +2241,7 @@ func TestModelsWithClientVersionReturnsCodexCatalog(t *testing.T) {
 	if got, _ := custom["display_name"].(string); got != "Custom Codex Model" {
 		t.Fatalf("custom display_name = %q, want Custom Codex Model", got)
 	}
-	wantCustomPriority := codexClientTestMaxTemplatePriority(t) + 100
+	wantCustomPriority := codexClientTestMaxTemplatePriority(catalog.Models) + 100
 	if got := int(codexClientTestPriority(custom["priority"])); got != wantCustomPriority {
 		t.Fatalf("custom priority = %v, want %d", custom["priority"], wantCustomPriority)
 	}
@@ -2564,16 +2570,18 @@ func codexClientTestPriority(raw any) int {
 	}
 }
 
-func codexClientTestMaxTemplatePriority(t *testing.T) int {
-	t.Helper()
-	var payload struct {
-		Models []map[string]any `json:"models"`
+func codexClientTestModelsBySlug(models []map[string]any) map[string]map[string]any {
+	bySlug := make(map[string]map[string]any, len(models))
+	for _, model := range models {
+		slug, _ := model["slug"].(string)
+		bySlug[slug] = model
 	}
-	if err := json.Unmarshal(registry.GetCodexClientModelsJSON(), &payload); err != nil {
-		t.Fatalf("parse Codex client model templates: %v", err)
-	}
+	return bySlug
+}
+
+func codexClientTestMaxTemplatePriority(models []map[string]any) int {
 	maxPriority := 0
-	for _, model := range payload.Models {
+	for _, model := range models {
 		if priority := codexClientTestPriority(model["priority"]); priority > maxPriority {
 			maxPriority = priority
 		}
